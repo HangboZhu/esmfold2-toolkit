@@ -1,0 +1,21 @@
+[project]
+name = "esmfold2-toolkit"
+version = "0.1.0"
+description = "Local ESMFold2 toolkit: single-chain folding, pMHC-TCR ipTM scoring, reward model (ESMC backbone)"
+# esm requires Python >=3.12,<3.13.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "esm",
+    "transformers",
+]
+
+# Both esm and transformers(Biohub fork) are vendored locally under external/
+# and installed from there. This avoids the GitHub "fast path" (which needs
+# raw.githubusercontent.com) entirely, so uv sync works on locked-down hosts.
+[tool.uv.sources]
+esm = { path = "./external/esm" }
+transformers = { path = "./external/transformers" }
+
+[tool.uv]
+# This is a script project, not an installable package.
+package = false

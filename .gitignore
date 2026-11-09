@@ -1,0 +1,17 @@
+# Model weights (~25 GB) -- download separately, see README.
+models/
+
+# Inference outputs / runs
+output/
+out*/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Tooling / local artifacts
+.zcode/
+.claude/
+*.log
