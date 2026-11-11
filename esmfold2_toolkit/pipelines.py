@@ -31,7 +31,7 @@ from .folding import (
     fold_single,
     score_binding,
 )
-from .model import DEFAULT_ESMC_DIR, DEFAULT_ESMFOLD2_DIR, load_model, validate_model_files
+from .model import DEFAULT_ESMC_DIR, DEFAULT_ESMFOLD2_DIR, load_model, validate_model_files, resolve_options
 
 
 def _check_cuda() -> None:
@@ -40,20 +40,21 @@ def _check_cuda() -> None:
         raise SystemExit("No CUDA GPU detected. ESMFold2 local inference requires a GPU.")
 
 
-def _load_and_report(esmfold2_dir: Path, esmc_dir: Path):
+def _load_and_report(esmfold2_dir: Path, esmc_dir: Path, *, mode="full", kernel_backend="auto", chunk_size=64):
     import torch  # noqa: F401 - ensure CUDA is initialised after GPU pinning
 
     print(f"[info] GPU: cuda (CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']})")
     print(f"[info] Loading ESMFold2 from {esmfold2_dir}")
     print(f"[info] Loading ESMC backbone from {esmc_dir}")
     t0 = time.time()
-    model, builder = load_model(esmfold2_dir, esmc_dir)
+    model, builder = load_model(esmfold2_dir, esmc_dir, mode=mode, kernel_backend=kernel_backend, chunk_size=chunk_size)
     print(f"[info] Models loaded in {time.time() - t0:.1f}s")
     return model, builder
 
 
 def run_fold(input_fasta: Path, output_dir: Path, *, gpu: int = 0,
-             esmfold2_dir: Path = DEFAULT_ESMFOLD2_DIR, esmc_dir: Path = DEFAULT_ESMC_DIR,
+             esmfold2_dir: Path | None = None, esmc_dir: Path = DEFAULT_ESMC_DIR,
+             mode: str = "full", kernel_backend: str = "auto", chunk_size: int = 64,
              num_loops: int = 3, num_sampling_steps: int = 50,
              num_diffusion_samples: int = 1, seed: int = 0, force: bool = False,
              errors: Path | None = None) -> None:
@@ -63,11 +64,13 @@ def run_fold(input_fasta: Path, output_dir: Path, *, gpu: int = 0,
     sequences are logged and (if errors is given) written to that FASTA.
     """
     setup_runtime(gpu)
+    esmfold2_dir, kernel_backend = resolve_options(esmfold2_dir, mode=mode, kernel_backend=kernel_backend, chunk_size=chunk_size)
     if not input_fasta.is_file():
         raise SystemExit(f"Input FASTA not found: {input_fasta}")
     validate_model_files(esmfold2_dir, esmc_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    _guard_mode(output_dir / "inference_mode.json", output_dir.glob("*.pdb"), mode, kernel_backend, esmfold2_dir, chunk_size)
     records = parse_fasta(input_fasta)
 
     # Resume support: which sequences already have a PDB on disk.
@@ -83,7 +86,7 @@ def run_fold(input_fasta: Path, output_dir: Path, *, gpu: int = 0,
         return
 
     _check_cuda()
-    model, builder = _load_and_report(esmfold2_dir, esmc_dir)
+    model, builder = _load_and_report(esmfold2_dir, esmc_dir, mode=mode, kernel_backend=kernel_backend, chunk_size=chunk_size)
 
     from tqdm import tqdm
 
@@ -133,7 +136,8 @@ def run_fold(input_fasta: Path, output_dir: Path, *, gpu: int = 0,
 
 
 def run_complex(input_csv: Path, output_dir: Path, *, gpu: int = 0,
-                esmfold2_dir: Path = DEFAULT_ESMFOLD2_DIR, esmc_dir: Path = DEFAULT_ESMC_DIR,
+                esmfold2_dir: Path | None = None, esmc_dir: Path = DEFAULT_ESMC_DIR,
+             mode: str = "full", kernel_backend: str = "auto", chunk_size: int = 64,
                 num_loops: int = 3, num_sampling_steps: int = 50,
                 num_diffusion_samples: int = 1, seed: int = 0, force: bool = False,
                 save_pae: bool = False) -> None:
@@ -146,12 +150,14 @@ def run_complex(input_csv: Path, output_dir: Path, *, gpu: int = 0,
     import numpy as np
 
     setup_runtime(gpu)
+    esmfold2_dir, kernel_backend = resolve_options(esmfold2_dir, mode=mode, kernel_backend=kernel_backend, chunk_size=chunk_size)
     if not input_csv.is_file():
         raise SystemExit(f"Input CSV not found: {input_csv}")
     validate_model_files(esmfold2_dir, esmc_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     results_csv = output_dir / "results.csv"
 
+    _guard_mode(output_dir / "inference_mode.json", [results_csv], mode, kernel_backend, esmfold2_dir, chunk_size)
     rows = read_complex_csv(input_csv, [name for name, _ in PMHC_TCR_CHAINS])
 
     # Resume support: which row ids already have a result line in results.csv.
@@ -167,7 +173,7 @@ def run_complex(input_csv: Path, output_dir: Path, *, gpu: int = 0,
         return
 
     _check_cuda()
-    model, builder = _load_and_report(esmfold2_dir, esmc_dir)
+    model, builder = _load_and_report(esmfold2_dir, esmc_dir, mode=mode, kernel_backend=kernel_backend, chunk_size=chunk_size)
 
     results_fh, results_writer = open_results_csv(results_csv, RESULT_COLUMNS)
     done_count = failed = 0
@@ -236,7 +242,8 @@ def run_complex(input_csv: Path, output_dir: Path, *, gpu: int = 0,
 
 def run_reward(input_csv: Path, output_csv: Path, *, gpu: int = 0,
                decoys: Path | None = None, num_samples: int = 3, lam: float = 1.0,
-               esmfold2_dir: Path = DEFAULT_ESMFOLD2_DIR, esmc_dir: Path = DEFAULT_ESMC_DIR,
+               esmfold2_dir: Path | None = None, esmc_dir: Path = DEFAULT_ESMC_DIR,
+             mode: str = "full", kernel_backend: str = "auto", chunk_size: int = 64,
                num_loops: int = 3, num_sampling_steps: int = 50, seed: int = 0,
                force: bool = False) -> None:
     """Score candidate TCRs against one target pMHC (+ optional decoy pMHCs).
@@ -246,6 +253,9 @@ def run_reward(input_csv: Path, output_csv: Path, *, gpu: int = 0,
     existing ids in output_csv are skipped unless force=True.
     """
     setup_runtime(gpu)
+    esmfold2_dir, kernel_backend = resolve_options(esmfold2_dir, mode=mode, kernel_backend=kernel_backend, chunk_size=chunk_size)
+    validate_model_files(esmfold2_dir, esmc_dir)
+    _guard_mode(output_csv.with_suffix(output_csv.suffix + ".mode.json"), [output_csv], mode, kernel_backend, esmfold2_dir, chunk_size)
     chains = [name for name, _ in PMHC_TCR_CHAINS]
     cands = read_complex_csv(input_csv, chains)
     decoy_rows = read_complex_csv(decoys, ["peptide", "mhc"]) if decoys else []
@@ -258,7 +268,7 @@ def run_reward(input_csv: Path, output_csv: Path, *, gpu: int = 0,
           f"{num_samples} samples/fold)")
 
     _check_cuda()
-    model, builder = _load_and_report(esmfold2_dir, esmc_dir)
+    model, builder = _load_and_report(esmfold2_dir, esmc_dir, mode=mode, kernel_backend=kernel_backend, chunk_size=chunk_size)
 
     fields = ["id", "reward", "r_bind", "r_bind_std", "r_decoy_max", "iptm", "plddt"]
     results_fh, writer = open_results_csv(output_csv, fields)
@@ -302,3 +312,19 @@ def run_reward(input_csv: Path, output_csv: Path, *, gpu: int = 0,
               f"±{tgt['r_bind_std']:.3f}{extra} | {time.time()-t0:.0f}s ({i+1}/{len(todo)})")
     results_fh.close()
     print(f"[done] rewards -> {output_csv}")
+
+
+def _guard_mode(path, outputs, mode, backend, directory, chunk_size):
+    """An output containing full predictions must not be resumed as Fast."""
+    import json
+    contract = dict(mode=mode, kernel_backend=backend, model_dir=str(Path(directory).resolve()), chunk_size=chunk_size)
+    if path.exists():
+        if json.loads(path.read_text()) != contract:
+            raise ValueError("Inference mode changed; choose a new output path")
+        return
+    if any(p.exists() for p in outputs):
+        if mode != "full" or backend != "reference":
+            raise ValueError("Existing outputs have no mode manifest; choose a new output path for Fast/fused")
+        return  # Preserve the behavior of legacy full/reference output folders.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(contract, indent=2) + "\n")

@@ -27,7 +27,12 @@ REPO = Path(__file__).resolve().parent
 
 
 def _add_model_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--esmfold2-dir", type=Path, default=REPO / "models" / "ESMFold2",
+    p.add_argument("--mode", choices=("full", "fast"), default="full",
+                   help="Model mode; Fast shares the existing environment and ESMC backbone.")
+    p.add_argument("--kernel-backend", choices=("auto", "reference", "fused"), default="auto",
+                   help="auto: reference for full, fused for fast.")
+    p.add_argument("--chunk-size", type=int, default=64)
+    p.add_argument("--esmfold2-dir", type=Path, default=None,
                    help="Local ESMFold2 model dir (model.safetensors, config.json, ccd.pkl).")
     p.add_argument("--esmc-dir", type=Path, default=REPO / "models" / "ESMC-6B",
                    help="Local ESMC model dir (sharded weights, index, config, tokenizer).")
@@ -45,6 +50,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("serve", help="Persistent peptide/MHC/b2m/TCRbeta scoring on multiple GPUs.")
+    _add_model_args(p)
+    _add_folding_args(p)
+    p.add_argument("--gpus", default="4,5", help="Comma-separated physical GPU indices or UUIDs.")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=7878)
+    p.add_argument("--project-root", type=Path, default=Path("/disk1/zhuhb/project/tcr-change-base"))
+    p.add_argument("--archive", type=Path, default=Path("/disk1/zhuhb/project/tcr-change-base/data/rl/esmfold"))
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(func=_serve)
 
     # --- fold -----------------------------------------------------------
     p = sub.add_parser("fold", help="Single-chain folding: FASTA -> one PDB per sequence.",
@@ -119,6 +135,13 @@ def _run(pipeline_name: str, args: argparse.Namespace) -> None:
     if "output" in kwargs:
         kwargs["output_csv" if command == "reward" else "output_dir"] = kwargs.pop("output")
     getattr(pipelines, pipeline_name)(**kwargs)
+
+
+def _serve(args):
+    import sys
+    sys.path.insert(0, str(args.project_root))
+    from structure_scoring.service import serve
+    serve(args)
 
 
 def main() -> None:

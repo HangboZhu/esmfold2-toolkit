@@ -258,3 +258,18 @@ esmfold2-toolkit/
 Code in this repo: [MIT](LICENSE). Model weights: see the
 [ESMFold2](https://huggingface.co/biohub/ESMFold2) /
 [ESMC-6B](https://huggingface.co/biohub/ESMC-6B) model cards for their terms.
+
+## Full / Fast 模式与多卡常驻服务
+
+使用同一个 `.venv`、同一个 ESMC 骨干；`--mode full` 为默认原版，`--mode fast` 选择 `models/ESMFold2-Fast` 并默认启用融合内核。`--kernel-backend reference|fused|auto` 可显式选择，chunk 默认 64。原来的三个批处理子命令也接受这些参数；更换模式必须使用不同输出路径，避免把原版结果误当成 Fast 缓存。
+
+```bash
+.venv/bin/python main.py fold -i examples/example.fasta -o out_fast --mode fast --gpu 4
+.venv/bin/python main.py serve --mode fast --gpus 4,5 --host 127.0.0.1 --port 7878
+```
+
+`serve` 为 peptide/MHC/b2m/TCRβ 四链打分接口，每张卡一个常驻模型，空闲卡领取下一项；提高候选批次吞吐，不把一个结构拆到多卡。支持 `/health`、`/metadata`、`POST /predict`（单个四链 JSON）和 `POST /score`（`{"rows":[...]}`，结果顺序与输入一致）。每行必需字符串字段为 `peptide,mhc,b2m,tcrbeta`；可传 `candidate` 和 `provenance.split` 等来源信息。未知来源保持 unknown，不能默认加入 train。
+
+该服务使用 `/disk1/zhuhb/project/tcr-change-base/structure_scoring/service.py`，可用 `--project-root` 指定源码目录。模型加载前固定每张物理 GPU；数据默认保存在项目 `data/rl/esmfold/`，包含结构、原始 PAE logits、PAE、pLDDT 与坐标。日志/PID 在 `structure_scoring/output_esmfold_service/`。相同教师、序列和 seed 的重复请求复用已校验的结果；模式不同不能混用缓存。在线服务的分数使用经独立验证的 PAE pair-ipTM 公式。
+
+原独立 Fast 试验环境仅保留在 `.deployment_history/fast_trial/`，不作为运行入口；旧实验路径迁移见项目数据集的 `audits/unified_deployment_migration.json`。
